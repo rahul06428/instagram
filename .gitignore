@@ -1,0 +1,15 @@
+# Node dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Auth state and sensitive files
+auth_state.json
+
+# Downloads directory
+downloads/
+
+# OS files
+.DS_Store
+Thumbs.db
