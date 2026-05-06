@@ -10,17 +10,73 @@ const __dirname = path.dirname(__filename);
 
 const AUTH_STATE_PATH = path.join(__dirname, '../auth_state.json');
 
-export async function downloadProfileImages(profileUrl: string): Promise<void> {
+/**
+ * Helper to introduce randomized delays (jitter)
+ */
+async function randomDelay(min: number, max: number): Promise<void> {
+  const ms = Math.floor(Math.random() * (max - min + 1) + min);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Extracts a short identifier from a URL for cleaner logging
+ */
+function getIdentifier(url: string): string {
+  try {
+    const cleanUrl = url.split('?')[0].replace(/\/$/, '');
+    if (!cleanUrl) return url;
+    const parts = cleanUrl.split('/');
+    const lastPart = parts[parts.length - 1];
+    return (typeof lastPart === 'string' && lastPart !== '') ? lastPart : url;
+  } catch (e) {
+    return url;
+  }
+}
+
+/**
+ * Processes an individual post page, handling carousels by clicking "Next"
+ */
+async function processPost(page: Page, postUrl: string): Promise<void> {
+  console.log(`Navigating to post: ${getIdentifier(postUrl)}`);
+  try {
+    await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // Initial delay after navigation to allow content to load and trigger requests
+    await randomDelay(2000, 4000);
+
+    let swiped = true;
+    while (swiped) {
+      // Look for the "Next" button in a carousel. Instagram usually uses aria-label="Next"
+      const nextButton = await page.$('[aria-label="Next"]');
+      if (!nextButton) {
+        swiped = false;
+        continue;
+      }
+
+      try {
+        await nextButton.click();
+        // Wait for the new image/video to load and trigger network requests
+        await randomDelay(1500, 3500);
+      } catch (e) {
+        // If click fails, it might be because button is not visible or clickable yet
+        console.warn(`Failed to click 'Next' button on ${getIdentifier(postUrl)}, might be end of carousel.`);
+        swiped = false;
+      }
+    }
+  } catch (err) {
+    console.error(`Error processing post ${getIdentifier(postUrl)}:`, err);
+  }
+}
+
+export async function downloadProfileImages(profileUrl: string, debugMode: boolean = false): Promise<void> {
   if (!fs.existsSync(AUTH_STATE_PATH)) {
     throw new Error('Authentication state not found. Please run login first.');
   }
 
-  console.log(`Launching browser to download images from: ${profileUrl}`);
-  const browser = await chromium.launch({ headless: false }); // Headed for visibility during development
+  console.log(`Launching browser (Debug Mode: ${debugMode}) to download images from: ${getIdentifier(profileUrl)}`);
+  const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({ storageState: AUTH_STATE_PATH });
-  const page = await context.newPage();
 
-  // Extract username from URL to create a directory name
+  // Extract username for directory naming
   const urlParts = profileUrl.replace(/\/$/, '').split('/');
   const username = urlParts[urlParts.length - 1] || 'unknown';
   const downloadDir = path.join(__dirname, '../downloads', username);
@@ -31,123 +87,158 @@ export async function downloadProfileImages(profileUrl: string): Promise<void> {
 
   const downloadedUrls = new Set<string>();
   const downloadedHashes = new Set<string>();
+  const seenPosts = new Set<string>(); // All posts encountered in DOM
+  const postQueue: string[] = [];     // Posts to be processed
   let imageCount = 0;
 
   console.log(`Created download directory: ${downloadDir}`);
 
-  // Intercept network responses
-  page.on('response', async (response) => {
-    const url = response.url();
-    const headers = response.headers();
-    const contentType = headers['content-type'];
+    // Intercept network responses at the CONTEXT level to catch all tabs/pages
+    context.on('response', async (response) => {
+      const url = response.url();
+      const headers = response.headers();
+      const contentType = headers['content-type'];
 
-    const isInstagramContent = url.includes('fbcdn.net') || url.includes('instagram.com');
-    const isAdOrTracker = url.includes('google.com') || url.includes('doubleclick.net') || url.includes('facebook.com/tr/');
+      const isInstagramContent = url.includes('fbcdn.net') || url.includes('instagram.com');
+      const isAdOrTracker = url.includes('google.com') || url.includes('doubleclick.net') || url.includes('facebook.com/tr/');
 
-    if (typeof contentType === 'string' && contentType.startsWith('image/') && isInstagramContent && !isAdOrTracker) {
-      if (!downloadedUrls.has(url)) {
-        downloadedUrls.add(url);
-        try {
-          const buffer = await response.body();
+      // Detect videos for logging purposes
+      if (typeof contentType === 'string' && contentType.startsWith('video/') && isInstagramContent && !isAdOrTracker) {
+        console.log(`[Detected] Video content found: ${getIdentifier(url)}`);
+      }
 
-          // Filter out small images (thumbnails, icons)
-          const dimensions = imageSize(buffer);
-          if (dimensions.width < 400 || dimensions.height < 400) {
-            // console.log(`Skipping small image: ${dimensions.width}x${dimensions.height} (${url})`);
-            return;
+      // Only process images
+      if (typeof contentType === 'string' && contentType.startsWith('image/') && isInstagramContent && !isAdOrTracker) {
+        const contentTypeStr = contentType; 
+        if (!downloadedUrls.has(url)) {
+          downloadedUrls.add(url);
+          try {
+            const buffer = await response.body();
+
+            // Filter out small images (thumbnails, icons) - only for images
+            try {
+              const dimensions = imageSize(buffer);
+              if (dimensions.width < 400 || dimensions.height < 400) return;
+            } catch (e) {
+              return;
+            }
+
+            // Check for duplicates using MD5 hash
+            const hash = crypto.createHash('md5').update(buffer).digest('hex');
+            if (downloadedHashes.has(hash)) return;
+            downloadedHashes.add(hash);
+
+            const parts = contentTypeStr.split('/');
+            let extension: string = 'jpg';
+            if (parts.length > 1 && parts[1]) {
+              const subParts = parts[1].split(';');
+              extension = subParts[0] ?? 'jpg';
+            }
+            const ext = extension;
+            const fileName = `${Date.now()}-${imageCount}.${ext}`;
+            const filePath = path.join(downloadDir, fileName);
+
+            fs.writeFileSync(filePath, buffer);
+            imageCount++;
+            console.log(`Downloaded: ${fileName}`);
+          } catch (err) {
+            // Fail silently for individual image download errors
           }
-
-          // Check for duplicates using MD5 hash
-          const hash = crypto.createHash('md5').update(buffer).digest('hex');
-          if (downloadedHashes.has(hash)) {
-            return;
-          }
-          downloadedHashes.add(hash);
-
-          const parts = contentType.split('/');
-          let extension = 'jpg';
-          if (parts.length > 1 && parts[1]) {
-            extension = parts[1].split(';')[0];
-          }
-          const fileName = `${Date.now()}-${imageCount}.${extension}`;
-          const filePath = path.join(downloadDir, fileName);
-
-          fs.writeFileSync(filePath, buffer);
-          imageCount++;
-          console.log(`Downloaded: ${fileName} (${url})`);
-        } catch (err) {
-          // Some images might fail to download due to CORS or other reasons when intercepting
-          // console.error(`Failed to download ${url}:`, err);
         }
       }
-    }
-  });
+    });
+
+  const mainPage = await context.newPage();
 
   try {
-    // Use a more lenient wait condition to avoid timeouts on high-activity pages
-    await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    
-    // Wait for the main content (article or profile header) to appear to ensure we are on the right page
+    await mainPage.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     try {
-      await page.waitForSelector('header, article, [role="main"]', { timeout: 15000 });
+      await mainPage.waitForSelector('header, article, [role="main"]', { timeout: 15000 });
       console.log('Profile page loaded.');
     } catch (e) {
       console.warn('Could not detect specific profile element, continuing anyway...');
     }
 
-    console.log('Starting scroll...');
-
-    // Robust scrolling loop
-    let previousHeight = 0;
-    let currentHeight = await page.evaluate(() => document.body.scrollHeight);
-    let lastImageCount = imageCount; // Track images for detection
     let scrollAttempts = 0;
-    const maxScrollAttempts = 200; 
+    const maxScrolls = debugMode ? 3 : 200;
     let consecutiveNoChangeCount = 0;
     const maxConsecutiveNoChange = 8;
 
-    console.log('Starting robust scrolling loop...');
+    console.log(`Starting interleaved loop (Max scrolls: ${maxScrolls})...`);
 
-    while (scrollAttempts < maxScrollAttempts) {
-      previousHeight = currentHeight;
-      
-      // Scroll down by a randomized amount to trigger loading better and look more human
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight * (1.2 + Math.random() * 0.6)));
-      
-      // Wait for content to load - Instagram can be slow
-      await page.waitForTimeout(3000); 
-      
-      currentHeight = await page.evaluate(() => document.body.scrollHeight);
-      scrollAttempts++;
+    while (scrollAttempts < maxScrolls) {
+      // 1. Scroll on main page
+      const previousHeight = await mainPage.evaluate(() => document.body.scrollHeight);
+      await mainPage.evaluate(() => window.scrollBy(0, window.innerHeight * (1.2 + Math.random() * 0.6)));
+      await randomDelay(2500, 4500);
 
-      if (currentHeight > previousHeight || imageCount > lastImageCount) {
-        consecutiveNoChangeCount = 0; // Reset if we found new content or images
-        lastImageCount = imageCount;
-        console.log(`Scrolling... (${scrollAttempts}/${maxScrollAttempts}) - New content/images found!`);
-      } else {
+      const currentHeight = await mainPage.evaluate(() => document.body.scrollHeight);
+
+      if (currentHeight <= previousHeight) {
         consecutiveNoChangeCount++;
-        console.log(`Scrolling... (${scrollAttempts}/${maxScrollAttempts}) - No change detected (${consecutiveNoChangeCount}/${maxConsecutiveNoChange})`);
+        console.log(`No height change (${consecutiveNoChangeCount}/${maxConsecutiveNoChange})`);
+        if (consecutiveNoChangeCount >= maxConsecutiveNoChange) break;
+      } else {
+        consecutiveNoChangeCount = 0;
       }
 
-      if (consecutiveNoChangeCount >= maxConsecutiveNoChange) {
-        // Before giving up, try one more long wait and a bigger scroll to see if it's just slow
-        console.log('No change detected for several attempts. Trying a larger jump and longer wait...');
-        await page.evaluate(() => window.scrollBy(0, window.innerHeight * 3));
-        await page.waitForTimeout(5000);
-        currentHeight = await page.evaluate(() => document.body.scrollHeight);
+      scrollAttempts++;
 
-        if (currentHeight > previousHeight) {
-          consecutiveNoChangeCount = 0;
-          console.log('New content found after larger jump!');
-        } else {
-          console.log('Reached end of page or content is not loading.');
-          break;
-        }
+      // 2. Discover ALL posts in current view and add to queue
+      const postUrls = (await mainPage.evaluate(() => {
+        const anchors = Array.from(document.querySelectorAll('a[href*="/p/"]')) as HTMLAnchorElement[];
+        return anchors.map((a) => a.href.split('?')[0]);
+      })) as string[];
+
+      let newlyDiscoveredCount = 0;
+      for (const url of postUrls) {
+          if (!seenPosts.has(url)) {
+              seenPosts.add(url);
+              postQueue.push(url);
+              newlyDiscoveredCount++;
+          }
+      }
+
+      if (newlyDiscoveredCount > 0) {
+        console.log(`[Discovery] Found ${newlyDiscoveredCount} new posts. Total seen so far: ${seenPosts.size}. Queue size: ${postQueue.length}`);
+      }
+
+      // 3. Process one from queue if available
+      if (postQueue.length > 0) {
+        const randomIndex = Math.floor(Math.random() * postQueue.length);
+        const targetPostUrl = postQueue.splice(randomIndex, 1)[0]!;
+        
+        console.log(`[Processing] ${getIdentifier(targetPostUrl)} | Remaining in queue: ${postQueue.length}`);
+
+        const postPage = await context.newPage();
+        await processPost(postPage, targetPostUrl);
+        await postPage.close();
+
+        // Jitter after returning to main page
+        await randomDelay(2000, 5000);
+      } else {
+        console.log('No posts in queue to process, scrolling more...');
       }
     }
 
-    console.log(`Finished scrolling. Total images downloaded: ${imageCount}`);
+    // 4. Drain remaining queue
+    if (postQueue.length > 0) {
+      console.log(`[Cleanup] Scroll loop finished. Draining remaining ${postQueue.length} posts from queue...`);
+      while (postQueue.length > 0) {
+        const randomIndex = Math.floor(Math.random() * postQueue.length);
+        const targetPostUrl = postQueue.splice(randomIndex, 1)[0]!;
 
+        console.log(`[Processing] ${getIdentifier(targetPostUrl)} | Remaining in queue: ${postQueue.length}`);
+
+        const postPage = await context.newPage();
+        await processPost(postPage, targetPostUrl);
+        await postPage.close();
+
+        await randomDelay(2000, 4000);
+      }
+    }
+
+    console.log(`Finished. Total images downloaded: ${imageCount}`);
   } catch (error) {
     console.error('An error occurred during the download process:', error);
   } finally {
@@ -158,5 +249,9 @@ export async function downloadProfileImages(profileUrl: string): Promise<void> {
 
 // For testing directly
 if (process.argv[2]) {
-    downloadProfileImages(process.argv[2]).catch(err => console.error(err));
+  const url = process.argv[2];
+  const debugMode = process.argv.includes('--debug');
+  downloadProfileImages(url, debugMode).catch((err) => console.error(err));
 }
+
+
