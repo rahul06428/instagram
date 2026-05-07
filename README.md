@@ -35,7 +35,27 @@ A lightweight tool built with Playwright to download high-quality profile images
 
 ## Usage
 
-### 1. Authentication (One-time setup)
+### 1. Image Classification (Face Detection)
+
+You can use the script in `scripts/classify_faces.py` to automatically organize downloaded images into `face` and `nonface` subfolders using a deep learning model.
+
+**Installation:**
+```bash
+pip install -r requirements.txt
+```
+
+**Run the classifier:**
+```bash
+python scripts/classify_faces.py <FOLDER_PATH>
+```
+
+**Example:**
+If your images are in `downloads/nasa/`, run:
+```bash
+python scripts/classify_faces.py downloads/nasa/
+```
+
+### 2. Authentication (One-time setup)
 
 Because Instagram requires login to view most profiles, you must first authenticate your session.
 
