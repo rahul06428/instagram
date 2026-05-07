@@ -1,17 +1,10 @@
 import cv2
+from deepface import DeepFace
 import os
 import shutil
 import argparse
-import urllib.request
-import numpy as np
 
-def download_file(url, filename):
-    if not os.path.exists(filename):
-        print(f"Downloading {filename}...")
-        urllib.request.urlretrieve(url, filename)
-        print("Download complete.")
-
-def classify_images(input_folder, prototxt_path, model_path):
+def classify_images(input_folder):
     # Define subfolders
     face_dir = os.path.join(input_folder, 'face')
     nonface_dir = os.path.join(input_folder, 'nonface')
@@ -30,10 +23,7 @@ def classify_images(input_folder, prototxt_path, model_path):
         print(f"No images found in {input_folder}")
         return
 
-    # Load DNN model
-    net = cv2.dnn.readNetFromCaffe(prototxt_path, model_path)
-
-    print(f"Found {len(files)} images. Starting classification with DNN...")
+    print(f"Found {len(files)} images. Starting classification with DeepFace (RetinaFace)...")
 
     count_face = 0
     count_nonface = 0
@@ -42,22 +32,23 @@ def classify_images(input_folder, prototxt_path, model_path):
         file_path = os.path.join(input_folder, filename)
         
         try:
-            img = cv2.imread(file_path)
-            if img is None:
-                print(f"Skipping {filename}: Could not read image.")
-                continue
-
-            # Prepare blob for DNN
-            blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
-            net.setInput(blob)
-            detections = net.forward()
+            # DeepFace.extract_faces returns a list of dictionaries.
+            # Each dictionary contains 'face' (the cropped face), 'facial_area', and 'confidence'.
+            # Using enforce_detection=False prevents it from raising an exception if no face is found.
+            results = DeepFace.extract_faces(
+                img_path=file_path, 
+                detector_backend='retinaface', 
+                enforce_detection=False
+            )
 
             has_face = False
-            for i in range(0, detections.shape[2]):
-                confidence = detections[0, 0, i, 2]
-                if confidence > 0.5:  # Threshold
+            if results:
+                # Check if any detected face has a decent confidence level
+                # When enforce_detection=False and no face is found, DeepFace might still return something.
+                # We check the confidence score to ensure it's actually a face.
+                max_confidence = max(face['confidence'] for face in results)
+                if max_confidence > 0.5:  # Threshold for considering it a face
                     has_face = True
-                    break
 
             if has_face:
                 shutil.move(file_path, os.path.join(face_dir, filename))
@@ -74,23 +65,14 @@ def classify_images(input_folder, prototxt_path, model_path):
     print(f"Non-faces moved to '{nonface_dir}': {count_nonface}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Classify images into face and non-face folders using DNN.")
+    parser = argparse.ArgumentParser(description="Classify images into face and non-face folders using DeepFace (RetinaFace).")
     parser.add_argument("folder", help="Path to the folder containing images.")
     args = parser.parse_args()
-
-    prototxt_path = "deploy.prototxt"
-    model_path = "res10_300x300_ssd_iter_140000.caffemodel"
-    
-    # URLs for OpenCV DNN Face Detector (ResNet SSD)
-    prototxt_url = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
-    model_url = "https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel"
 
     if not os.path.isdir(args.folder):
         print(f"Error: {args.folder} is not a valid directory.")
     else:
         try:
-            download_file(prototxt_url, prototxt_path)
-            download_file(model_url, model_path)
-            classify_images(args.folder, prototxt_path, model_path)
+            classify_images(args.folder)
         except Exception as e:
-            print(f"An error occurred during setup/execution: {e}")
+            print(f"An error occurred during execution: {e}")
