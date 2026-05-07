@@ -9,6 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const AUTH_STATE_PATH = path.join(__dirname, '../auth_state.json');
+const MAX_CONCURRENT_POSTS = 5;
 
 /**
  * Helper to introduce randomized delays (jitter)
@@ -26,7 +27,7 @@ function getIdentifier(url: string): string {
     const cleanUrl = url.split('?')[0].replace(/\/$/, '');
     if (!cleanUrl) return url;
     const parts = cleanUrl.split('/');
-    const lastPart = parts[parts.length - 1];
+    const lastPart = parts[parts.length - 1] ?? '';
     return (typeof lastPart === 'string' && lastPart !== '') ? lastPart : url;
   } catch (e) {
     return url;
@@ -135,11 +136,11 @@ export async function downloadProfileImages(profileUrl: string, debugMode: boole
               extension = subParts[0] ?? 'jpg';
             }
             const ext = extension;
-            const fileName = `${Date.now()}-${imageCount}.${ext}`;
+            const currentImageIndex = imageCount++;
+            const fileName = `${Date.now()}-${currentImageIndex}.${ext}`;
             const filePath = path.join(downloadDir, fileName);
 
             fs.writeFileSync(filePath, buffer);
-            imageCount++;
             console.log(`Downloaded: ${fileName}`);
           } catch (err) {
             // Fail silently for individual image download errors
@@ -149,6 +150,7 @@ export async function downloadProfileImages(profileUrl: string, debugMode: boole
     });
 
   const mainPage = await context.newPage();
+  const activeTasks = new Set<Promise<void>>();
 
   try {
     await mainPage.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -164,7 +166,7 @@ export async function downloadProfileImages(profileUrl: string, debugMode: boole
     let consecutiveNoChangeCount = 0;
     const maxConsecutiveNoChange = 8;
 
-    console.log(`Starting interleaved loop (Max scrolls: ${maxScrolls})...`);
+    console.log(`Starting interleaved loop (Max scrolls: ${maxScrolls}, Concurrency: ${MAX_CONCURRENT_POSTS})...`);
 
     while (scrollAttempts < maxScrolls) {
       // 1. Scroll on main page
@@ -203,38 +205,58 @@ export async function downloadProfileImages(profileUrl: string, debugMode: boole
         console.log(`[Discovery] Found ${newlyDiscoveredCount} new posts. Total seen so far: ${seenPosts.size}. Queue size: ${postQueue.length}`);
       }
 
-      // 3. Process one from queue if available
-      if (postQueue.length > 0) {
+      // 3. Start tasks if there is capacity
+      while (activeTasks.size < MAX_CONCURRENT_POSTS && postQueue.length > 0) {
         const randomIndex = Math.floor(Math.random() * postQueue.length);
         const targetPostUrl = postQueue.splice(randomIndex, 1)[0]!;
         
-        console.log(`[Processing] ${getIdentifier(targetPostUrl)} | Remaining in queue: ${postQueue.length}`);
+        console.log(`[Processing] ${getIdentifier(targetPostUrl)} | Remaining in queue: ${postQueue.length} | Active tasks: ${activeTasks.size + 1}`);
 
-        const postPage = await context.newPage();
-        await processPost(postPage, targetPostUrl);
-        await postPage.close();
+        const task = (async () => {
+          const postPage = await context.newPage();
+          try {
+            await processPost(postPage, targetPostUrl);
+          } finally {
+            await postPage.close();
+          }
+        })();
 
-        // Jitter after returning to main page
-        await randomDelay(2000, 5000);
-      } else {
-        console.log('No posts in queue to process, scrolling more...');
+        activeTasks.add(task);
+        task.finally(() => activeTasks.delete(task));
       }
+
+      // Jitter to prevent tight loop if we are at capacity or queue is empty
+      await randomDelay(2000, 4000);
     }
 
-    // 4. Drain remaining queue
-    if (postQueue.length > 0) {
-      console.log(`[Cleanup] Scroll loop finished. Draining remaining ${postQueue.length} posts from queue...`);
-      while (postQueue.length > 0) {
-        const randomIndex = Math.floor(Math.random() * postQueue.length);
-        const targetPostUrl = postQueue.splice(randomIndex, 1)[0]!;
+    // 4. Drain remaining queue and wait for all tasks
+    if (postQueue.length > 0 || activeTasks.size > 0) {
+      console.log(`[Cleanup] Scroll loop finished. Draining remaining ${postQueue.length} posts and waiting for ${activeTasks.size} active tasks...`);
+      while (postQueue.length > 0 || activeTasks.size > 0) {
+        // Start more if possible
+        while (postQueue.length > 0 && activeTasks.size < MAX_CONCURRENT_POSTS) {
+          const randomIndex = Math.floor(Math.random() * postQueue.length);
+          const targetPostUrl = postQueue.splice(randomIndex, 1)[0]!;
+          console.log(`[Processing] ${getIdentifier(targetPostUrl)} | Remaining in queue: ${postQueue.length}`);
 
-        console.log(`[Processing] ${getIdentifier(targetPostUrl)} | Remaining in queue: ${postQueue.length}`);
+          const task = (async () => {
+            const postPage = await context.newPage();
+            try {
+              await processPost(postPage, targetPostUrl);
+            } finally {
+              await postPage.close();
+            }
+          })();
 
-        const postPage = await context.newPage();
-        await processPost(postPage, targetPostUrl);
-        await postPage.close();
+          activeTasks.add(task);
+          task.finally(() => activeTasks.delete(task));
+        }
 
-        await randomDelay(2000, 4000);
+        if (activeTasks.size > 0) {
+          await Promise.race(Array.from(activeTasks));
+        } else if (postQueue.length === 0) {
+          break;
+        }
       }
     }
 
