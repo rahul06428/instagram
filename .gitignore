@@ -13,3 +13,7 @@ downloads/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Logs and temporary files
+logs/
+prompt.txt

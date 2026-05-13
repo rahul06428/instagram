@@ -1,17 +1,24 @@
 import cv2
-from deepface import DeepFace
+import numpy as np
+from insightface.app import FaceAnalysis
 import os
 import shutil
 import argparse
 
 def classify_images(input_folder):
+    # Initialize InsightFace FaceAnalysis app
+    # buffalo_l is a robust model pack providing detection and attribute analysis (age, gender)
+    print("Initializing InsightFace (this may take a moment on first run)...")
+    app = FaceAnalysis(providers=['CPUExecutionProvider'], det_size=(640, 640))
+    app.prepare(ctx_id=0, det_thresh=0.5)
+
     # Define subfolders
-    face_dir = os.path.join(input_folder, 'face')
-    nonface_dir = os.path.join(input_folder, 'nonface')
+    adult_females_dir = os.path.join(input_folder, 'adult_females')
+    rejected_dir = os.path.join(input_folder, 'rejected')
 
     # Create directories if they don't exist
-    os.makedirs(face_dir, exist_ok=True)
-    os.makedirs(nonface_dir, exist_ok=True)
+    os.makedirs(adult_females_dir, exist_ok=True)
+    os.makedirs(rejected_dir, exist_ok=True)
 
     # Supported image extensions
     valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
@@ -23,49 +30,79 @@ def classify_images(input_folder):
         print(f"No images found in {input_folder}")
         return
 
-    print(f"Found {len(files)} images. Starting classification with DeepFace (RetinaFace)...")
+    print(f"Found {len(files)} images. Starting classification with InsightFace...")
 
-    count_face = 0
-    count_nonface = 0
+    count_adult_females = 0
+    count_rejected = 0
 
-    for filename in files:
+    for i, filename in enumerate(files, 1):
         file_path = os.path.join(input_folder, filename)
+        print(f"[{i}/{len(files)}] Processing {filename}...", end=" ", flush=True)
         
         try:
-            # DeepFace.extract_faces returns a list of dictionaries.
-            # Each dictionary contains 'face' (the cropped face), 'facial_area', and 'confidence'.
-            # Using enforce_detection=False prevents it from raising an exception if no face is found.
-            results = DeepFace.extract_faces(
-                img_path=file_path, 
-                detector_backend='retinaface', 
-                enforce_detection=False
-            )
+            # Load image with OpenCV
+            img = cv2.imread(file_path)
+            if img is None:
+                print(f"-> Moved to 'rejected' (could not read image)")
+                shutil.move(file_path, os.path.join(rejected_dir, filename))
+                count_rejected += 1
+                continue
 
-            has_face = False
-            if results:
-                # Check if any detected face has a decent confidence level
-                # When enforce_detection=False and no face is found, DeepFace might still return something.
-                # We check the confidence score to ensure it's actually a face.
-                max_confidence = max(face['confidence'] for face in results)
-                if max_confidence > 0.5:  # Threshold for considering it a face
-                    has_face = True
+            # Detect faces and analyze attributes in one pass
+            faces = app.get(img)
 
-            if has_face:
-                shutil.move(file_path, os.path.join(face_dir, filename))
-                count_face += 1
+            if not faces:
+                shutil.move(file_path, os.path.join(rejected_dir, filename))
+                count_rejected += 1
+                print(f"-> Moved to 'rejected' (no faces detected)")
+                continue
+
+            has_adult_female = False
+            contains_male = False
+            contains_kid = False
+
+            for face in faces:
+                # InsightFace attributes:
+                # gender: 0 for Female, 1 for Male
+                # age: integer representing estimated age
+                gender = face.gender
+                age = face.age
+
+                if age < 10:
+                    contains_kid = True
+                elif gender == 1:  # Male
+                    contains_male = True
+                elif gender == 0 and age >= 10:  # Female & Adult
+                    has_adult_female = True
+
+            # Final criteria check: At least one adult female AND no males AND no kids
+            if has_adult_female and not contains_male and not contains_kid:
+                shutil.move(file_path, os.path.join(adult_females_dir, filename))
+                count_adult_females += 1
+                print(f"-> Moved to 'adult_females'")
             else:
-                shutil.move(file_path, os.path.join(nonface_dir, filename))
-                count_nonface += 1
+                reasons = []
+                if contains_male:
+                    reasons.append("contains male")
+                if contains_kid:
+                    reasons.append("contains kid")
+                if not has_adult_female:
+                    reasons.append("no adult female found")
+                
+                reason_str = ", ".join(reasons)
+                shutil.move(file_path, os.path.join(rejected_dir, filename))
+                count_rejected += 1
+                print(f"-> Moved to 'rejected' ({reason_str})")
 
         except Exception as e:
-            print(f"Error processing {filename}: {e}")
+            print(f"\n[!] Error processing {filename}: {e}")
 
-    print("Classification complete.")
-    print(f"Faces found and moved to '{face_dir}': {count_face}")
-    print(f"Non-faces moved to '{nonface_dir}': {count_nonface}")
+    print("\nClassification complete.")
+    print(f"Adult females found and moved to '{adult_females_dir}': {count_adult_females}")
+    print(f"Rejected images moved to '{rejected_dir}': {count_rejected}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Classify images into face and non-face folders using DeepFace (RetinaFace).")
+    parser = argparse.ArgumentParser(description="Classify images into adult_females and rejected folders using InsightFace.")
     parser.add_argument("folder", help="Path to the folder containing images.")
     args = parser.parse_args()
 

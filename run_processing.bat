@@ -3,7 +3,7 @@ SET FOLDER=%1
 
 IF "%FOLDER%"=="" (
     echo Error: Please provide a folder path as an argument.
-    echo Usage: run_classification.bat ^<folder_path^>
+    echo Usage: run_processing.bat ^<folder_path^>
     exit /b 1
 )
 
@@ -25,11 +25,11 @@ IF %ERRORLEVEL% NEQ 0 (
 
 if not exist logs mkdir logs
 
-echo Running classification on: %FOLDER%
-venv\Scripts\python.exe scripts/classify_faces.py %FOLDER% | powershell -Command "$input | Tee-Object -FilePath 'logs\classification.log' -Append"
+echo Running processing on: %FOLDER%
+venv\Scripts\python.exe comfy_batch_processor.py %FOLDER% | powershell -Command "$input | Tee-Object -FilePath 'logs\processing.log' -Append"
 
 IF %ERRORLEVEL% NEQ 0 (
-    echo Classification script failed.
+    echo processing script failed.
     exit /b 1
 )
 

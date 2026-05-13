@@ -1,4 +1,9 @@
 opencv-python
 numpy
-deepface
 tf-keras
+aiohttp
+Pillow
+insightface
+onnxruntime
+
+

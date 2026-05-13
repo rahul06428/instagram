@@ -35,16 +35,29 @@ A lightweight tool built with Playwright to download high-quality profile images
 
 ## Usage
 
-### 1. Image Classification (Face Detection)
+### 1. Image Classification (Advanced Attribute Analysis)
 
-You can use the script in `scripts/classify_faces.py` to automatically organize downloaded images into `face` and `nonface` subfolders using a deep learning model.
+The tool includes a powerful classification script `scripts/classify_faces.py` that uses **InsightFace** to perform advanced face analysis (gender and age detection). It is designed to automatically curate specific datasets.
+
+**Key Features:**
+- **Smart Segregation**: Filters for images containing only adult females ($\ge$ 18) by strictly excluding any images with males or children present.
+- **Detailed Rejection Reasons**: When an image is moved to the `rejected` folder, the console explicitly logs why (e.g., `contains male`, `no adult female found`).
+- **Progress & Log Tracking**: Real-time progress is displayed in the console and simultaneously saved to log files for easy auditing.
 
 **Installation:**
 ```bash
 pip install -r requirements.txt
 ```
 
-**Run the classifier:**
+**Running Classification via Batch Script (Recommended):**
+The provided batch scripts handle environment setup, dependency installation, and automated logging to the `logs/` directory.
+
+Run:
+```bash
+run_classification.bat <FOLDER_PATH>
+```
+
+**Running Manually:**
 ```bash
 python scripts/classify_faces.py <FOLDER_PATH>
 ```
@@ -52,8 +65,10 @@ python scripts/classify_faces.py <FOLDER_PATH>
 **Example:**
 If your images are in `downloads/nasa/`, run:
 ```bash
-python scripts/classify_faces.py downloads/nasa/
+run_classification.bat downloads/nasa/
 ```
+>>>>+++ REPLACE
+
 
 ### 2. Authentication (One-time setup)
 

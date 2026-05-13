@@ -1,0 +1,4 @@
+{
+  "comfyui_url": "http://192.168.0.128:8000",
+  "workflow_file": "workflow_api_new.json"
+}
