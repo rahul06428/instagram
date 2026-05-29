@@ -68,6 +68,62 @@ async function processPost(page: Page, postUrl: string): Promise<void> {
   }
 }
 
+/**
+ * Loads the set of already processed post URLs from a JSON file.
+ */
+async function loadProcessedPosts(downloadDir: string): Promise<Set<string>> {
+  const filePath = path.join(downloadDir, 'processed_posts.json');
+  if (fs.existsSync(filePath)) {
+    try {
+      const data = fs.readFileSync(filePath, 'utf-8');
+      const urls = JSON.parse(data);
+      return new Set<string>(urls);
+    } catch (e) {
+      console.error(`Error loading processed posts from ${filePath}:`, e);
+    }
+  }
+  return new Set<string>();
+}
+
+/**
+ * Saves the set of processed post URLs to a JSON file.
+ */
+async function saveProcessedPosts(downloadDir: string, processedPosts: Set<string>): Promise<void> {
+  const filePath = path.join(downloadDir, 'processed_posts.json');
+  try {
+    const data = JSON.stringify(Array.from(processedPosts), null, 2);
+    fs.writeFileSync(filePath, data);
+  } catch (e) {
+    console.error(`Error saving processed posts to ${filePath}:`, e);
+  }
+}
+
+/**
+ * Scans the download directory for existing image files and returns a Set of their MD5 hashes.
+ */
+async function scanExistingHashes(downloadDir: string): Promise<Set<string>> {
+  const hashes = new Set<string>();
+  if (!fs.existsSync(downloadDir)) return hashes;
+
+  const files = fs.readdirSync(downloadDir);
+  for (const file of files) {
+    const filePath = path.join(downloadDir, file);
+    // Skip the processed posts json file and directories
+    if (file === 'processed_posts.json' || fs.lstatSync(filePath).isDirectory()) {
+      continue;
+    }
+
+    try {
+      const buffer = fs.readFileSync(filePath);
+      const hash = crypto.createHash('md5').update(buffer).digest('hex');
+      hashes.add(hash);
+    } catch (e) {
+      console.warn(`Could not hash file ${file}:`, e);
+    }
+  }
+  return hashes;
+}
+
 export async function downloadProfileImages(profileUrl: string, debugMode: boolean = false): Promise<void> {
   if (!fs.existsSync(AUTH_STATE_PATH)) {
     throw new Error('Authentication state not found. Please run login first.');
@@ -86,8 +142,13 @@ export async function downloadProfileImages(profileUrl: string, debugMode: boole
     fs.mkdirSync(downloadDir, { recursive: true });
   }
 
+  // HYBRID APPROACH: Initialize state from existing files and records
+  console.log(`Initializing incremental download state for ${username}...`);
+  const processedPosts = await loadProcessedPosts(downloadDir);
+  const downloadedHashes = await scanExistingHashes(downloadDir);
+  console.log(`Loaded ${processedPosts.size} processed posts and ${downloadedHashes.size} existing image hashes.`);
+
   const downloadedUrls = new Set<string>();
-  const downloadedHashes = new Set<string>();
   const seenPosts = new Set<string>(); // All posts encountered in DOM
   const postQueue: string[] = [];     // Posts to be processed
   let imageCount = 0;
@@ -194,10 +255,14 @@ export async function downloadProfileImages(profileUrl: string, debugMode: boole
 
       let newlyDiscoveredCount = 0;
       for (const url of postUrls) {
-          if (!seenPosts.has(url)) {
+          if (!seenPosts.has(url) && !processedPosts.has(url)) {
               seenPosts.add(url);
               postQueue.push(url);
               newlyDiscoveredCount++;
+          } else if (!seenPosts.has(url)) {
+              // Still mark as seen so we don't re-discover it in this session, 
+              // even if it was already processed in a previous session.
+              seenPosts.add(url);
           }
       }
 
@@ -216,6 +281,9 @@ export async function downloadProfileImages(profileUrl: string, debugMode: boole
           const postPage = await context.newPage();
           try {
             await processPost(postPage, targetPostUrl);
+            // After successful processing, mark as processed and save
+            processedPosts.add(targetPostUrl);
+            await saveProcessedPosts(downloadDir, processedPosts);
           } finally {
             await postPage.close();
           }
@@ -243,6 +311,9 @@ export async function downloadProfileImages(profileUrl: string, debugMode: boole
             const postPage = await context.newPage();
             try {
               await processPost(postPage, targetPostUrl);
+              // After successful processing, mark as processed and save
+              processedPosts.add(targetPostUrl);
+              await saveProcessedPosts(downloadDir, processedPosts);
             } finally {
               await postPage.close();
             }
@@ -275,5 +346,3 @@ if (process.argv[2]) {
   const debugMode = process.argv.includes('--debug');
   downloadProfileImages(url, debugMode).catch((err) => console.error(err));
 }
-
-

@@ -26,7 +26,7 @@ IF %ERRORLEVEL% NEQ 0 (
 if not exist logs mkdir logs
 
 echo Running processing on: %FOLDER%
-venv\Scripts\python.exe comfy_batch_processor.py %FOLDER% | powershell -Command "$input | Tee-Object -FilePath 'logs\processing.log' -Append"
+venv\Scripts\python.exe -u comfy_batch_processor.py %FOLDER% | powershell -Command "$input | Tee-Object -FilePath 'logs\processing.log' -Append"
 
 IF %ERRORLEVEL% NEQ 0 (
     echo processing script failed.

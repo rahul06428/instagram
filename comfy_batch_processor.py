@@ -12,6 +12,8 @@ from PIL import Image
 
 async def process_batch(session, semaphore, prompt, negative_prompt, image_paths, workflow, config):
     """Processes a batch of images (up to 5) in a single ComfyUI request."""
+    filenames = ", ".join([p.name for p in image_paths])
+    #print(f"[INFO] Batch queued: [{filenames}]")
     async with semaphore:
         try:
             # 1. Prepare Base64 Images for the whole batch
@@ -41,6 +43,7 @@ async def process_batch(session, semaphore, prompt, negative_prompt, image_paths
 
             # 3. Submit Prompt
             url = config['comfyui_url']
+            #print(f"[INFO] Submitting batch to ComfyUI for images: [{filenames}]")
             async with session.post(f"{url}/prompt", json={"prompt": new_workflow, "client_id": "python_batch_processor"}) as resp:
                 if resp.status != 200:
                     print(f"Error submitting batch for {image_paths[0].name}: {resp.status}")
@@ -50,7 +53,8 @@ async def process_batch(session, semaphore, prompt, negative_prompt, image_paths
                 prompt_id = data.get("prompt_id") or list(data.keys())[0]
 
             # 4. Poll History
-            print(f"Started processing batch of {len(image_paths)} (ID: {prompt_id})")
+            filenames = ", ".join([p.name for p in image_paths])
+            print(f"Started processing batch of {len(image_paths)} (ID: {prompt_id}) containing: [{filenames}]")
             while True:
                 async with session.get(f"{url}/history/{prompt_id}") as hist_resp:
                     if hist_resp.status == 200:
@@ -77,14 +81,18 @@ async def process_batch(session, semaphore, prompt, negative_prompt, image_paths
                                     # but for simplicity we use batch info
                                     out_name = f"batch_{prompt_id[:8]}_{i}.png"
                                     img.save(processed_dir / out_name)
+                                    #print(f"[SUCCESS] Saved: {out_name}")
                                 
-                                print(f"✅ Completed batch: {len(output_images_base64)} image(s) saved in {processed_dir}")
+                                print(f"[SUCCESS] Completed batch: {len(output_images_base64)} image(s) saved in {processed_dir}")
+                                return
+                            elif "error" in run_data:
+                                print(f"[ERROR] ComfyUI error for batch {prompt_id}: {run_data['error']}")
                                 return
                     
                 await asyncio.sleep(2)
 
         except Exception as e:
-            print(f"❌ Failed to process batch starting with {image_paths[0].name}: {str(e)}")
+            print(f"[ERROR] Failed to process batch starting with {image_paths[0].name}: {str(e)}")
 
 async def main():
     parser = argparse.ArgumentParser(description="ComfyUI Batch Image Processor (Optimized)")
@@ -136,8 +144,8 @@ async def main():
         print(f"No images found in {input_folder}")
         return
 
-    # Group images into batches of 5
-    batch_size = 5
+    # Group images into batches of 10
+    batch_size = 10
     batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
 
     print(f"Found {len(images)} images. Created {len(batches)} batches (size {batch_size}).")
@@ -153,7 +161,8 @@ async def main():
             prompt = prompts[idx % len(prompts)] 
             tasks.append(process_batch(session, semaphore, prompt, negative_prompt, batch_images, workflow, config))
         
-        await asyncio.gather(*tasks)
+        # Using return_exceptions=True so that one failed batch doesn't stop the whole process
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     print("\nAll batches completed.")
 

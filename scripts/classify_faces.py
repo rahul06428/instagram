@@ -43,8 +43,8 @@ def classify_images(input_folder):
             # Load image with OpenCV
             img = cv2.imread(file_path)
             if img is None:
-                print(f"-> Moved to 'rejected' (could not read image)")
-                shutil.move(file_path, os.path.join(rejected_dir, filename))
+                print(f"-> Copied to 'rejected' (could not read image)")
+                shutil.copy(file_path, os.path.join(rejected_dir, filename))
                 count_rejected += 1
                 continue
 
@@ -52,9 +52,9 @@ def classify_images(input_folder):
             faces = app.get(img)
 
             if not faces:
-                shutil.move(file_path, os.path.join(rejected_dir, filename))
+                shutil.copy(file_path, os.path.join(rejected_dir, filename))
                 count_rejected += 1
-                print(f"-> Moved to 'rejected' (no faces detected)")
+                print(f"-> Copied to 'rejected' (no faces detected)")
                 continue
 
             has_adult_female = False
@@ -77,9 +77,9 @@ def classify_images(input_folder):
 
             # Final criteria check: At least one adult female AND no males AND no kids
             if has_adult_female and not contains_male and not contains_kid:
-                shutil.move(file_path, os.path.join(adult_females_dir, filename))
+                shutil.copy(file_path, os.path.join(adult_females_dir, filename))
                 count_adult_females += 1
-                print(f"-> Moved to 'adult_females'")
+                print(f"-> Copied to 'adult_females'")
             else:
                 reasons = []
                 if contains_male:
@@ -90,16 +90,16 @@ def classify_images(input_folder):
                     reasons.append("no adult female found")
                 
                 reason_str = ", ".join(reasons)
-                shutil.move(file_path, os.path.join(rejected_dir, filename))
+                shutil.copy(file_path, os.path.join(rejected_dir, filename))
                 count_rejected += 1
-                print(f"-> Moved to 'rejected' ({reason_str})")
+                print(f"-> Copied to 'rejected' ({reason_str})")
 
         except Exception as e:
             print(f"\n[!] Error processing {filename}: {e}")
 
     print("\nClassification complete.")
-    print(f"Adult females found and moved to '{adult_females_dir}': {count_adult_females}")
-    print(f"Rejected images moved to '{rejected_dir}': {count_rejected}")
+    print(f"Adult females found and copied to '{adult_females_dir}': {count_adult_females}")
+    print(f"Rejected images copied to '{rejected_dir}': {count_rejected}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Classify images into adult_females and rejected folders using InsightFace.")
